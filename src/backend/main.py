@@ -1,0 +1,273 @@
+"""
+FastAPI application for Vila Acadia timesheet system.
+Provides authentication and Google Sheets integration.
+"""
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
+from .models import (
+    AuthRequest, AuthResponse, HealthResponse,
+    HoursSubmissionRequest, HoursSubmissionResponse,
+    DailyTipRequest, DailyTipResponse
+)
+from .gsheets_service import gs_service
+from .config import settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager.
+    Initializes Google Sheets connection on startup.
+    """
+    # Startup: Initialize Google Sheets connection
+    try:
+        gs_service.connect()
+        print("✓ Connected to Google Sheets")
+    except Exception as e:
+        print(f"✗ Failed to connect to Google Sheets: {e}")
+        print("  The application will continue, but API calls may fail.")
+    
+    yield
+    
+    # Shutdown: cleanup if needed
+    print("Shutting down...")
+
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Vila Acadia Timesheet API",
+    description="Backend API for employee timesheet management using Google Sheets",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/", tags=["Root"])
+async def root():
+    """Root endpoint - API information."""
+    return {
+        "service": "Vila Acadia Timesheet API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "auth": "/auth/verify",
+            "docs": "/docs"
+        }
+    }
+
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+async def health_check():
+    """
+    Health check endpoint.
+    Verifies connectivity to Google Sheets.
+    """
+    try:
+        result = gs_service.health_check()
+        
+        if result["status"] == "error":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=result["message"]
+            )
+        
+        return HealthResponse(
+            status=result["status"],
+            spreadsheet_id=result["spreadsheet_id"],
+            spreadsheet_title=result.get("spreadsheet_title", ""),
+            message=result["message"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Health check failed: {str(e)}"
+        )
+
+
+@app.post("/auth/verify", response_model=AuthResponse, tags=["Authentication"])
+async def verify_auth(auth_request: AuthRequest):
+    """
+    Verify employee authentication using PIN.
+    
+    This endpoint checks the provided name and PIN against
+    the Settings sheet in Google Sheets.
+    
+    Args:
+        auth_request: Contains employee name and 4-digit PIN
+    
+    Returns:
+        AuthResponse with success status and message
+    """
+    try:
+        # Verify credentials against Google Sheets
+        is_valid = gs_service.verify_employee_pin(
+            name=auth_request.name,
+            pin=auth_request.pin
+        )
+        
+        if is_valid:
+            return AuthResponse(
+                success=True,
+                message="Authentication successful",
+                employee_name=auth_request.name
+            )
+        else:
+            return AuthResponse(
+                success=False,
+                message="Invalid credentials. Please check your name and PIN.",
+                employee_name=""
+            )
+    
+    except Exception as e:
+        # Log error for debugging but don't expose details to client
+        print(f"Authentication error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication service temporarily unavailable"
+        )
+
+
+@app.post("/submit-hours", response_model=HoursSubmissionResponse, tags=["Time Entry"])
+async def submit_hours(request: HoursSubmissionRequest):
+    """
+    Submit hours worked for an employee.
+    
+    This endpoint:
+    1. Verifies the employee exists in Settings
+    2. Checks if the month is still open (before 2nd of next month)
+    3. Calculates hours from start/end time
+    4. Creates date column if needed
+    5. Checks cell is empty (no overwrite)
+    6. Writes hours to the appropriate cell
+    
+    Args:
+        request: Contains employee name, date, start time, and end time
+    
+    Returns:
+        HoursSubmissionResponse with success status and calculated hours
+    """
+    try:
+        # Check if month is closed
+        if gs_service.is_month_closed(request.date):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Month is closed for submissions. Cutoff date has passed."
+            )
+        
+        # Verify employee exists in Settings
+        employees = gs_service.get_employee_settings()
+        employee_exists = any(
+            emp["name"].lower() == request.employee_name.lower() 
+            for emp in employees
+        )
+        
+        if not employee_exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Employee '{request.employee_name}' not found in Settings"
+            )
+        
+        # Calculate hours
+        hours = gs_service.calculate_hours(request.start_time, request.end_time)
+        
+        # Submit hours to sheet
+        result = gs_service.submit_hours(
+            employee_name=request.employee_name,
+            date=request.date,
+            hours=hours
+        )
+        
+        return HoursSubmissionResponse(
+            success=True,
+            message=f"Hours submitted successfully. {'New column created.' if result['column_created'] else ''}",
+            hours_worked=hours,
+            date=request.date
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Hours submission error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit hours: {str(e)}"
+        )
+
+
+@app.post("/manager/submit-daily-tip", response_model=DailyTipResponse, tags=["Manager"])
+async def submit_daily_tip(request: DailyTipRequest):
+    """
+    Submit total daily tips and trigger formula calculations.
+    
+    This endpoint (manager only):
+    1. Checks if month is still open
+    2. Creates date column if needed
+    3. Writes total tips (T) to Totals section
+    4. Injects formulas for:
+       - Total Hours (H) = SUM of all employee hours
+       - Tip Rate (R) = T / H
+       - Individual Payouts (Pi) = hi × R
+    
+    Args:
+        request: Contains date and total tips amount
+    
+    Returns:
+        DailyTipResponse with success status and formula injection confirmation
+    """
+    try:
+        # Check if month is closed
+        if gs_service.is_month_closed(request.date):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Month is closed for submissions. Cutoff date has passed."
+            )
+        
+        # Submit tips and inject formulas
+        result = gs_service.submit_daily_tips(
+            date=request.date,
+            total_tips=request.total_tips
+        )
+        
+        return DailyTipResponse(
+            success=True,
+            message=f"Daily tips submitted successfully. Formulas calculated for {result['employee_count']} employees.",
+            date=request.date,
+            total_tips=request.total_tips,
+            formulas_injected=result["formulas_injected"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Daily tip submission error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit daily tips: {str(e)}"
+        )
+
+
+# Development server runner
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "src.backend.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True
+    )
+
