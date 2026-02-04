@@ -315,31 +315,34 @@ curl -X POST http://localhost:8000/auth/verify \
   -d '{"name": "John Doe", "pin": "1234"}'
 ```
 
-## 🚢 Deployment to Railway
+## 🚢 Deployment
 
-1. Install Railway CLI:
-   ```bash
-   npm install -g @railway/cli
-   ```
+### Option 1: Docker (Recommended)
 
-2. Login to Railway:
-   ```bash
-   railway login
-   ```
+```bash
+# Build and run with Docker Compose
+docker-compose up -d
 
-3. Initialize project:
-   ```bash
-   railway init
-   ```
+# Check status
+docker-compose ps
 
+# View logs
+docker-compose logs -f
+```
+
+See `DOCKER.md` for complete Docker deployment guide.
+
+### Option 2: Railway
+
+1. Push to GitLab/GitHub
+2. Connect Railway to your repository
+3. Railway will auto-detect Dockerfile
 4. Add environment variables in Railway dashboard:
    - `GOOGLE_SHEET_ID`
    - `SERVICE_ACCOUNT_JSON`
+5. Deploy automatically
 
-5. Deploy:
-   ```bash
-   railway up
-   ```
+See `DEPLOYMENT.md` for detailed Railway instructions.
 
 ## 📚 Documentation
 

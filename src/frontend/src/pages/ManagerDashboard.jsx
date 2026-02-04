@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { DollarSign, Users, LogOut, Calendar, TrendingUp } from 'lucide-react';
+import { DollarSign, Users, LogOut, Calendar, TrendingUp, Shield } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { managerAPI } from '../services/api';
 import { getCurrentDate } from '../utils/timeCalculator';

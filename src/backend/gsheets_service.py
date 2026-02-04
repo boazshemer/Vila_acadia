@@ -1,6 +1,6 @@
 """
-Google Sheets Service for Vila Acadia
-Handles all interactions with the Google Sheets database.
+Google Sheets Service for Vila Acadia - Version 2
+Implements the correct tip distribution matrix structure.
 """
 import gspread
 from google.oauth2.service_account import Credentials
@@ -19,10 +19,6 @@ class GoogleSheetsService:
     
     # Sheet configuration
     SETTINGS_TAB = "Settings"
-    MONTH_SHEET_HEADERS = [
-        "Employee", "Date", "Clock In", "Clock Out", "Hours Worked",
-        "Tips Collected", "Tip Rate (per hour)", "Payout"
-    ]
     
     def __init__(self):
         """Initialize the Google Sheets service with authentication."""
@@ -31,8 +27,11 @@ class GoogleSheetsService:
     
     def _get_credentials(self) -> Credentials:
         """Create credentials from service account JSON."""
-        creds_dict = settings.get_service_account_dict()
-        return Credentials.from_service_account_info(creds_dict, scopes=self.SCOPES)
+        try:
+            return Credentials.from_service_account_file('service-account.json', scopes=self.SCOPES)
+        except Exception:
+            creds_dict = settings.get_service_account_dict()
+            return Credentials.from_service_account_info(creds_dict, scopes=self.SCOPES)
     
     def connect(self) -> None:
         """Establish connection to Google Sheets."""
@@ -48,10 +47,7 @@ class GoogleSheetsService:
         return self._spreadsheet
     
     def health_check(self) -> Dict[str, str]:
-        """
-        Verify connectivity to Google Sheets.
-        Returns connection status and spreadsheet info.
-        """
+        """Verify connectivity to Google Sheets."""
         try:
             sheet = self.get_spreadsheet()
             return {
@@ -68,29 +64,18 @@ class GoogleSheetsService:
             }
     
     def get_employee_settings(self) -> List[Dict[str, str]]:
-        """
-        Fetch employee roster and PINs from the Settings tab.
-        
-        Returns:
-            List of dictionaries with 'name' and 'pin' keys.
-            Example: [{"name": "John Doe", "pin": "1234"}, ...]
-        
-        Raises:
-            Exception if Settings tab doesn't exist or is malformed.
-        """
+        """Fetch employee roster and PINs from the Settings tab."""
         try:
             sheet = self.get_spreadsheet()
             settings_worksheet = sheet.worksheet(self.SETTINGS_TAB)
-            
-            # Get all records from the Settings tab
-            # Expected format: Header row with "Name" and "PIN" columns
             records = settings_worksheet.get_all_records()
             
             employees = []
             for record in records:
-                # Support both "Name"/"name" and "PIN"/"pin" column names
-                name = record.get("Name") or record.get("name", "").strip()
-                pin = str(record.get("PIN") or record.get("pin", "")).strip()
+                name = (record.get("Name") or record.get("name") or 
+                       record.get("Employee Name") or record.get("employee name") or "").strip()
+                pin = str(record.get("PIN") or record.get("pin") or 
+                         record.get("Pin") or "").strip()
                 
                 if name and pin:
                     employees.append({"name": name, "pin": pin})
@@ -103,16 +88,7 @@ class GoogleSheetsService:
             raise Exception(f"Error reading employee settings: {str(e)}")
     
     def verify_employee_pin(self, name: str, pin: str) -> bool:
-        """
-        Verify an employee's PIN against the Settings sheet.
-        
-        Args:
-            name: Employee name
-            pin: 4-digit PIN
-        
-        Returns:
-            True if credentials are valid, False otherwise.
-        """
+        """Verify an employee's PIN against the Settings sheet."""
         try:
             employees = self.get_employee_settings()
             
@@ -123,12 +99,19 @@ class GoogleSheetsService:
             return False
         
         except Exception:
-            # In case of any error, fail closed (deny access)
             return False
     
     def get_or_create_month_sheet(self, date: Optional[datetime] = None) -> gspread.Worksheet:
         """
-        Get or create a worksheet for the current/specified month.
+        Get or create a worksheet for the month.
+        
+        Structure:
+        Row 1: Empty
+        Row 2: C2="TOTAL TIP", D2=empty (manager input)
+        Row 3: C3="TOTAL HOURS", D3==SUM(C6:C70)
+        Row 4: C4="TIP PER HOUR", D4==IF(D3>0, D2/D3, 0)
+        Row 5: B5="שם העובד", C5="HOURS", D5+= Dates
+        Row 6+: Employee data
         
         Args:
             date: Date to determine month (defaults to current date)
@@ -139,175 +122,67 @@ class GoogleSheetsService:
         if date is None:
             date = datetime.now()
         
-        # Format: "January 2026"
-        sheet_name = date.strftime("%B %Y")
+        # Format: "MM-YYYY" (e.g., "02-2026")
+        sheet_name = date.strftime("%m-%Y")
         
         sheet = self.get_spreadsheet()
         
         try:
             # Try to get existing worksheet
             worksheet = sheet.worksheet(sheet_name)
+            
+            # Check if Dashboard exists (C2 should have "TOTAL TIP")
+            c2_value = worksheet.cell(2, 3).value  # C2
+            if not c2_value or c2_value != "TOTAL TIP":
+                # Dashboard doesn't exist, initialize it
+                self._initialize_dashboard(worksheet)
+            
             return worksheet
         
         except gspread.WorksheetNotFound:
-            # Create new worksheet with headers
+            # Create new monthly worksheet
             worksheet = sheet.add_worksheet(
                 title=sheet_name,
                 rows=100,
-                cols=len(self.MONTH_SHEET_HEADERS)
+                cols=50  # A + B + C (hours) + 47 date columns
             )
             
-            # Set headers in the first row
-            worksheet.update([self.MONTH_SHEET_HEADERS], "A1")
-            
-            # Format headers (bold)
-            worksheet.format("A1:H1", {
-                "textFormat": {"bold": True},
-                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-            })
+            # Initialize Dashboard and Headers
+            self._initialize_dashboard(worksheet)
             
             return worksheet
     
-    def check_entry_exists(self, employee_name: str, date: str, 
-                          worksheet: Optional[gspread.Worksheet] = None) -> Tuple[bool, Optional[int]]:
+    def _initialize_dashboard(self, worksheet: gspread.Worksheet) -> None:
         """
-        Check if an entry already exists for the given employee and date.
-        This implements the "Read-before-Write" safety guard.
-        
-        Args:
-            employee_name: Name of the employee
-            date: Date string (format: YYYY-MM-DD)
-            worksheet: Optional worksheet to check (defaults to current month)
-        
-        Returns:
-            Tuple of (exists: bool, row_number: Optional[int])
-            If exists is True, row_number indicates where the entry was found.
+        Initialize the Headers for a worksheet.
+        Each date will have its own dashboard in columns (3 columns per date).
         """
-        if worksheet is None:
-            worksheet = self.get_or_create_month_sheet()
+        # Check if employee numbers already exist in Column A6
+        a6_value = worksheet.cell(6, 1).value  # A6
+        if not a6_value or a6_value != "1":
+            # Add employee numbers in Column A (rows 6-75)
+            employee_numbers = [[i] for i in range(1, 71)]  # 1 to 70
+            worksheet.update('A6:A75', employee_numbers, value_input_option='USER_ENTERED')
         
-        try:
-            # Get all values from the worksheet
-            all_values = worksheet.get_all_values()
+        # Check if employee name header exists in Column B5
+        b5_value = worksheet.cell(5, 2).value  # B5
+        if not b5_value or b5_value != 'שם העובד':
+            # Add employee name header in Column B5
+            worksheet.update_cell(5, 2, 'שם העובד')  # B5
             
-            # Skip header row (index 0)
-            for idx, row in enumerate(all_values[1:], start=2):
-                # Check if row has data and matches employee + date
-                if len(row) >= 2:
-                    row_employee = row[0].strip()
-                    row_date = row[1].strip()
-                    
-                    if row_employee.lower() == employee_name.lower() and row_date == date:
-                        return True, idx
-            
-            return False, None
+            # Format A5 and B5 with bold and light green background
+            worksheet.format('A5:B5', {
+                "textFormat": {"bold": True},
+                "backgroundColor": {"red": 0.85, "green": 0.92, "blue": 0.83},
+                "horizontalAlignment": "CENTER"
+            })
         
-        except Exception as e:
-            raise Exception(f"Error checking for existing entry: {str(e)}")
-    
-    def find_next_empty_row(self, worksheet: Optional[gspread.Worksheet] = None) -> int:
-        """
-        Find the next empty row in the worksheet.
-        
-        Args:
-            worksheet: Optional worksheet to check (defaults to current month)
-        
-        Returns:
-            Row number of the next empty row.
-        """
-        if worksheet is None:
-            worksheet = self.get_or_create_month_sheet()
-        
-        all_values = worksheet.get_all_values()
-        
-        # Find first row where column A (Employee) is empty
-        for idx, row in enumerate(all_values[1:], start=2):
-            if not row or not row[0].strip():
-                return idx
-        
-        # If all rows have data, return the next row
-        return len(all_values) + 1
-    
-    def calculate_hours(self, start_time: str, end_time: str) -> float:
-        """
-        Calculate hours worked from start and end time.
-        Handles overnight shifts (e.g., 23:00 to 02:00 = 3 hours).
-        
-        Args:
-            start_time: Start time in HH:MM format
-            end_time: End time in HH:MM format
-        
-        Returns:
-            Hours worked as a float (rounded to 2 decimals)
-        """
-        start_hour, start_min = map(int, start_time.split(':'))
-        end_hour, end_min = map(int, end_time.split(':'))
-        
-        # Create datetime objects for calculation
-        start_dt = datetime(2000, 1, 1, start_hour, start_min)
-        end_dt = datetime(2000, 1, 1, end_hour, end_min)
-        
-        # If end time is before start time, assume next day
-        if end_dt <= start_dt:
-            end_dt += timedelta(days=1)
-        
-        # Calculate difference
-        diff = end_dt - start_dt
-        hours = diff.total_seconds() / 3600
-        
-        return round(hours, 2)
-    
-    def get_or_create_date_column(self, date: str, worksheet: Optional[gspread.Worksheet] = None) -> Tuple[int, bool]:
-        """
-        Get or create a column for a specific date.
-        
-        Args:
-            date: Date string in YYYY-MM-DD format
-            worksheet: Optional worksheet (defaults to current month)
-        
-        Returns:
-            Tuple of (column_index, was_created)
-            column_index: 1-based column number
-            was_created: True if column was just created
-        """
-        if worksheet is None:
-            date_obj = datetime.strptime(date, "%Y-%m-%d")
-            worksheet = self.get_or_create_month_sheet(date_obj)
-        
-        # Get first row (headers)
-        headers = worksheet.row_values(1)
-        
-        # Check if date column exists
-        date_formatted = datetime.strptime(date, "%Y-%m-%d").strftime("%m/%d/%Y")
-        
-        for idx, header in enumerate(headers, start=1):
-            if header == date_formatted:
-                return idx, False
-        
-        # Column doesn't exist, create it
-        next_col = len(headers) + 1
-        
-        # Add date header
-        worksheet.update_cell(1, next_col, date_formatted)
-        
-        # Format header
-        worksheet.format(f"{self._col_index_to_letter(next_col)}1", {
-            "textFormat": {"bold": True},
-            "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-        })
-        
-        return next_col, True
+        # Each date creates its own columns
+        # Freeze Row 5 and Columns A, B only (2 columns frozen)
+        worksheet.freeze(rows=5, cols=2)
     
     def _col_index_to_letter(self, col_index: int) -> str:
-        """
-        Convert column index (1-based) to letter (A, B, C, ..., Z, AA, AB, ...).
-        
-        Args:
-            col_index: 1-based column index
-        
-        Returns:
-            Column letter(s)
-        """
+        """Convert column index (1-based) to letter (A, B, C, ...)."""
         result = ""
         while col_index > 0:
             col_index -= 1
@@ -315,61 +190,213 @@ class GoogleSheetsService:
             col_index //= 26
         return result
     
-    def get_employee_row(self, employee_name: str, worksheet: Optional[gspread.Worksheet] = None) -> Optional[int]:
+    def get_or_create_employee_row(self, employee_name: str, worksheet: gspread.Worksheet) -> int:
         """
-        Find the row number for a specific employee.
-        
-        Args:
-            employee_name: Employee name to search for
-            worksheet: Optional worksheet (defaults to current month)
-        
-        Returns:
-            Row number (1-based) or None if not found
-        """
-        if worksheet is None:
-            worksheet = self.get_or_create_month_sheet()
-        
-        # Get all values from column A (employee names)
-        col_a = worksheet.col_values(1)
-        
-        # Search for employee (case-insensitive)
-        for idx, name in enumerate(col_a, start=1):
-            if name.lower().strip() == employee_name.lower().strip():
-                return idx
-        
-        return None
-    
-    def get_or_create_employee_row(self, employee_name: str, worksheet: Optional[gspread.Worksheet] = None) -> int:
-        """
-        Get or create a row for a specific employee.
+        Get or create row for a specific employee.
+        Employees start from row 6.
+        Employee names are stored in column B.
         
         Args:
             employee_name: Employee name
-            worksheet: Optional worksheet (defaults to current month)
+            worksheet: Worksheet to search
         
         Returns:
-            Row number (1-based)
+            Row index (1-based, starting from 6)
         """
-        if worksheet is None:
-            worksheet = self.get_or_create_month_sheet()
+        # Get all values from column B (employee names)
+        col_b = worksheet.col_values(2)  # Column B
         
-        # Check if employee row exists
-        row = self.get_employee_row(employee_name, worksheet)
-        if row:
-            return row
+        # Search for employee (case-insensitive, skip header rows 1-5)
+        for idx, name in enumerate(col_b, start=1):
+            if idx > 5 and name.strip().lower() == employee_name.lower().strip():
+                return idx
         
-        # Find first empty row after header
-        col_a = worksheet.col_values(1)
-        next_row = len(col_a) + 1
+        # Employee not found, add to next row (minimum row 6, max row 75)
+        next_row = len(col_b) + 1
+        if next_row < 6:
+            next_row = 6
+        if next_row > 75:
+            raise ValueError("Maximum number of employees (70) reached")
         
-        # Add employee name
-        worksheet.update_cell(next_row, 1, employee_name)
-        
+        worksheet.update_cell(next_row, 2, employee_name)  # Column B
         return next_row
+    
+    def get_or_create_date_column(self, date: str, worksheet: gspread.Worksheet) -> Tuple[int, bool]:
+        """
+        Get or create columns for a specific date.
+        
+        First date gets 3 columns: Labels + HOURS + Date
+        Subsequent dates get 2 columns: HOURS + Date (share labels column)
+        
+        Args:
+            date: Date string in YYYY-MM-DD format
+            worksheet: Worksheet to search
+        
+        Returns:
+            Tuple of (hours_column_index, was_created)
+        """
+        date_obj = datetime.strptime(date, "%Y-%m-%d")
+        date_formatted = date_obj.strftime("%d/%m/%Y")  # e.g., "03/02/2026"
+        
+        # Get row 5 (headers)
+        row5 = worksheet.row_values(5)
+        
+        # Search for existing date column (looking for date in row 5)
+        for idx, header in enumerate(row5, start=1):
+            if idx >= 3 and header == date_formatted:
+                # Found the date column, hours column is one before
+                return idx - 1, False
+        
+        # All dates follow the same pattern - no distinction between first and subsequent dates
+        
+        # Date not found, create new columns
+        next_col = len(row5) + 1
+        if next_col < 3:
+            next_col = 3  # Start from column C
+        
+        # All dates use 2 columns: Labels+HOURS and Values+Date
+        hours_col = next_col
+        date_col = next_col + 1
+        
+        hours_letter = self._col_index_to_letter(hours_col)
+        date_letter = self._col_index_to_letter(date_col)
+        
+        # Every date gets Labels in rows 2-4 of HOURS column
+        worksheet.update_cell(2, hours_col, 'TOTAL TIP')
+        worksheet.update_cell(3, hours_col, 'TOTAL HOURS')
+        worksheet.update_cell(4, hours_col, 'TIP PER HOUR')
+        
+        # === HOURS COLUMN ===
+        # Row 5: "HOURS"
+        worksheet.update_cell(5, hours_col, 'HOURS')
+        
+        # === DATE COLUMN ===
+        # Row 2: Empty (for manager to input TOTAL TIP value)
+        # Row 3: Formula =SUM(C6:C70) (sum hours from hours column)
+        # Row 4: Formula =D2/D3 (tip per hour)
+        # Row 5: Date
+        
+        worksheet.update([[f'=SUM({hours_letter}6:{hours_letter}70)']], f'{date_letter}3', value_input_option='USER_ENTERED')
+        worksheet.update([[f'={date_letter}2/{date_letter}3']], f'{date_letter}4', value_input_option='USER_ENTERED')
+        worksheet.update_cell(5, date_col, date_formatted)
+        
+        # Format headers (rows 2-5) - bold, light green background
+        worksheet.format(f'{hours_letter}2:{date_letter}5', {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 0.85, "green": 0.92, "blue": 0.83},
+            "horizontalAlignment": "CENTER"
+        })
+        
+        # Format rows 2-4 of hours column (values with proper formatting)
+        worksheet.format(f'{hours_letter}2', {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 0.85, "green": 0.92, "blue": 0.83},
+            "horizontalAlignment": "CENTER",
+            "numberFormat": {
+                "type": "CURRENCY",
+                "pattern": "#,##0 ₪"
+            }
+        })
+        
+        worksheet.format(f'{hours_letter}3', {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 0.85, "green": 0.92, "blue": 0.83},
+            "horizontalAlignment": "CENTER",
+            "numberFormat": {
+                "type": "NUMBER",
+                "pattern": "0.00"
+            }
+        })
+        
+        worksheet.format(f'{hours_letter}4', {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 0.85, "green": 0.92, "blue": 0.83},
+            "horizontalAlignment": "CENTER",
+            "numberFormat": {
+                "type": "CURRENCY",
+                "pattern": "#,##0.00 ₪"
+            }
+        })
+        
+        # Format date column row 2 (TOTAL TIP value - light orange for manager input)
+        worksheet.format(f'{date_letter}2', {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.7},  # Light orange
+            "horizontalAlignment": "CENTER",
+            "numberFormat": {
+                "type": "CURRENCY",
+                "pattern": "#,##0 ₪"
+            }
+        })
+        
+        # Format hours column (light yellow background + 2 decimals)
+        worksheet.format(f'{hours_letter}6:{hours_letter}70', {
+            "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.8},
+            "numberFormat": {
+                "type": "NUMBER",
+                "pattern": "0.00"
+            }
+        })
+        
+        # Add tips formulas for date column rows 6-70 (=C6*$D$4, =C7*$D$4, ...)
+        # Formula: hours_column * TIP_PER_HOUR (which is in date_column row 4)
+        formulas = []
+        for row in range(6, 71):
+            formulas.append([f'={hours_letter}{row}*${date_letter}$4'])
+        
+        # Batch update formulas
+        worksheet.update(
+            f'{date_letter}6:{date_letter}70',
+            formulas,
+            value_input_option='USER_ENTERED'
+        )
+        
+        # Format tips column (currency with ₪ symbol, no decimals)
+        worksheet.format(f'{date_letter}6:{date_letter}70', {
+            "numberFormat": {
+                "type": "CURRENCY",
+                "pattern": "#,##0 ₪"
+            }
+        })
+        
+        # Add right border to date column for visual separation between date blocks
+        worksheet.format(f'{date_letter}1:{date_letter}70', {
+            "borders": {
+                "right": {
+                    "style": "SOLID_MEDIUM",
+                    "color": {"red": 0, "green": 0, "blue": 0}
+                }
+            }
+        })
+        
+        return hours_col, True
+    
+    def calculate_hours(self, start_time: str, end_time: str) -> float:
+        """Calculate hours worked from start and end time."""
+        start_hour, start_min = map(int, start_time.split(':'))
+        end_hour, end_min = map(int, end_time.split(':'))
+        
+        start_dt = datetime(2000, 1, 1, start_hour, start_min)
+        end_dt = datetime(2000, 1, 1, end_hour, end_min)
+        
+        # If end time is before start time, assume next day
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+        
+        diff = end_dt - start_dt
+        hours = diff.total_seconds() / 3600
+        
+        return round(hours, 2)
     
     def submit_hours(self, employee_name: str, date: str, hours: float) -> Dict[str, any]:
         """
         Submit hours worked for an employee on a specific date.
+        
+        Structure:
+        - Find/create employee row (column B, starting from row 6)
+        - Find/create date columns (HOURS + Date)
+        - Write hours to the HOURS column for that date
+        - Tip calculation happens automatically via formulas in date column
         
         Args:
             employee_name: Employee name
@@ -382,53 +409,49 @@ class GoogleSheetsService:
         date_obj = datetime.strptime(date, "%Y-%m-%d")
         worksheet = self.get_or_create_month_sheet(date_obj)
         
-        # Get or create date column
-        col_idx, col_created = self.get_or_create_date_column(date, worksheet)
+        # Get or create date columns (returns hours column index)
+        hours_col, col_created = self.get_or_create_date_column(date, worksheet)
         
         # Get or create employee row
-        row_idx = self.get_or_create_employee_row(employee_name, worksheet)
+        employee_row = self.get_or_create_employee_row(employee_name, worksheet)
         
-        # Check if cell is empty (safety guard)
-        cell_value = worksheet.cell(row_idx, col_idx).value
-        if cell_value and cell_value.strip():
-            raise Exception(f"Cell already contains data: {cell_value}. Cannot overwrite.")
+        # Check if hours already submitted for this date
+        existing_value = worksheet.cell(employee_row, hours_col).value
+        if existing_value and str(existing_value).strip():
+            raise Exception(f"Hours already submitted for {employee_name} on {date_obj.strftime('%d/%m/%Y')}. Manual manager approval required for duplicate entry.")
         
-        # Write hours
-        worksheet.update_cell(row_idx, col_idx, hours)
+        # Write hours to the HOURS column for this date
+        worksheet.update_cell(employee_row, hours_col, hours)
         
         return {
-            "row": row_idx,
-            "column": col_idx,
+            "success": True,
+            "row": employee_row,
+            "employee_name": employee_name,
+            "date": date_obj.strftime("%d/%m/%Y"),
             "hours": hours,
-            "column_created": col_created
+            "worksheet": worksheet.title,
+            "date_column_created": col_created
         }
     
     def is_month_closed(self, date: str) -> bool:
-        """
-        Check if a month is closed for submissions.
-        Months are closed after the 2nd of the following month.
-        
-        Args:
-            date: Date string in YYYY-MM-DD format
-        
-        Returns:
-            True if month is closed, False otherwise
-        """
+        """Check if a month is closed for submissions."""
         date_obj = datetime.strptime(date, "%Y-%m-%d")
         today = datetime.now()
         
-        # Calculate the 2nd of the next month after the submission date
+        # Calculate the 2nd of the next month
         if date_obj.month == 12:
             cutoff_date = datetime(date_obj.year + 1, 1, 2)
         else:
             cutoff_date = datetime(date_obj.year, date_obj.month + 1, 2)
         
-        # Month is closed if today is after the cutoff
         return today > cutoff_date
     
     def submit_daily_tips(self, date: str, total_tips: float) -> Dict[str, any]:
         """
-        Submit total daily tips and inject formulas.
+        Submit total daily tips (manager function).
+        
+        Writes total_tips to row 2 of the date's VALUES column (the column after HOURS).
+        All formulas automatically recalculate.
         
         Args:
             date: Date in YYYY-MM-DD format
@@ -440,79 +463,26 @@ class GoogleSheetsService:
         date_obj = datetime.strptime(date, "%Y-%m-%d")
         worksheet = self.get_or_create_month_sheet(date_obj)
         
-        # Get or create date column
-        col_idx, col_created = self.get_or_create_date_column(date, worksheet)
-        col_letter = self._col_index_to_letter(col_idx)
+        # Get or create date columns (returns hours column index)
+        hours_col, col_created = self.get_or_create_date_column(date, worksheet)
         
-        # Get all employee rows (all rows with names in column A)
-        col_a = worksheet.col_values(1)
-        employee_rows = []
-        for idx, name in enumerate(col_a, start=1):
-            if idx > 1 and name.strip():  # Skip header row
-                employee_rows.append(idx)
+        # Date column is the next column after hours column
+        date_col = hours_col + 1
         
-        if not employee_rows:
-            raise Exception("No employees found in the sheet")
+        # Write total tips to row 2 of the DATE column (D2, F2, H2, etc.)
+        worksheet.update_cell(2, date_col, total_tips)
         
-        # Find totals section (3 rows after last employee)
-        totals_start_row = max(employee_rows) + 2
-        
-        # Row positions for totals
-        total_tips_row = totals_start_row
-        total_hours_row = totals_start_row + 1
-        tip_rate_row = totals_start_row + 2
-        
-        # Add labels if not exist
-        if not worksheet.cell(total_tips_row, 1).value:
-            worksheet.update_cell(total_tips_row, 1, "Total Tips (T)")
-        if not worksheet.cell(total_hours_row, 1).value:
-            worksheet.update_cell(total_hours_row, 1, "Total Hours (H)")
-        if not worksheet.cell(tip_rate_row, 1).value:
-            worksheet.update_cell(tip_rate_row, 1, "Tip Rate (R)")
-        
-        # Write total tips value
-        worksheet.update_cell(total_tips_row, col_idx, total_tips)
-        
-        # Inject formulas
-        self._inject_formulas(worksheet, col_idx, col_letter, employee_rows, 
-                             total_tips_row, total_hours_row, tip_rate_row)
+        # Count employees (from column B)
+        col_b = worksheet.col_values(2)
+        employee_count = sum(1 for idx, name in enumerate(col_b, start=1) if idx > 5 and name.strip())
         
         return {
-            "column": col_idx,
+            "date": date_obj.strftime("%d/%m/%Y"),
             "total_tips": total_tips,
-            "employee_count": len(employee_rows),
+            "employee_count": employee_count,
             "formulas_injected": True
         }
-    
-    def _inject_formulas(self, worksheet: gspread.Worksheet, col_idx: int, col_letter: str,
-                        employee_rows: List[int], total_tips_row: int, 
-                        total_hours_row: int, tip_rate_row: int) -> None:
-        """
-        Inject formulas for tip calculations.
-        
-        Args:
-            worksheet: Target worksheet
-            col_idx: Column index
-            col_letter: Column letter (A, B, C, etc.)
-            employee_rows: List of employee row numbers
-            total_tips_row: Row for total tips
-            total_hours_row: Row for total hours
-            tip_rate_row: Row for tip rate
-        """
-        # Formula for Total Hours (H): Sum of all employee hours in this column
-        employee_range = ",".join([f"{col_letter}{row}" for row in employee_rows])
-        total_hours_formula = f"=SUM({employee_range})"
-        worksheet.update_cell(total_hours_row, col_idx, total_hours_formula)
-        
-        # Formula for Tip Rate (R): T / H
-        tip_rate_formula = f"={col_letter}{total_tips_row}/{col_letter}{total_hours_row}"
-        worksheet.update_cell(tip_rate_row, col_idx, tip_rate_formula)
-        
-        # Note: Individual payouts (Pi = hi × R) would be calculated in a separate column
-        # or we can add them below the employee hours if needed
 
 
 # Global service instance
 gs_service = GoogleSheetsService()
-
- 

@@ -194,7 +194,7 @@ async def submit_hours(request: HoursSubmissionRequest):
         
         return HoursSubmissionResponse(
             success=True,
-            message=f"Hours submitted successfully. {'New column created.' if result['column_created'] else ''}",
+            message=f"Hours submitted successfully to {result['worksheet']}!",
             hours_worked=hours,
             date=request.date
         )

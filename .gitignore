@@ -33,4 +33,10 @@ logs/
 htmlcov/
 service-account.json
 
+# Node.js / Frontend
+node_modules/
+dist/
+build/
+.parcel-cache/
+
 
