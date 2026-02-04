@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", env="HOST")
     port: int = Field(default=8000, env="PORT")
     
+    # Frontend URL for CORS configuration
+    frontend_url: str = Field(default="http://localhost:3000", env="FRONTEND_URL")
+    # Additional allowed origins (comma-separated)
+    allowed_origins: str = Field(default="", env="ALLOWED_ORIGINS")
+    
+    # Manager authentication
+    manager_password: str = Field(default="manager2024", env="MANAGER_PASSWORD")
+    
     @field_validator("service_account_json")
     @classmethod
     def validate_service_account_json(cls, v: str) -> str:
@@ -30,6 +38,17 @@ class Settings(BaseSettings):
     def get_service_account_dict(self) -> Dict[str, Any]:
         """Parse and return service account credentials as a dictionary."""
         return json.loads(self.service_account_json)
+    
+    def get_allowed_origins(self) -> list[str]:
+        """Get list of allowed CORS origins."""
+        origins = [self.frontend_url]
+        
+        # Add additional origins from comma-separated string
+        if self.allowed_origins:
+            additional = [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+            origins.extend(additional)
+        
+        return origins
     
     class Config:
         env_file = ".env"

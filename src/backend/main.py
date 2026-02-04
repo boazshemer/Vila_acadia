@@ -2,6 +2,7 @@
 FastAPI application for Vila Acadia timesheet system.
 Provides authentication and Google Sheets integration.
 """
+import logging
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -9,10 +10,18 @@ from contextlib import asynccontextmanager
 from .models import (
     AuthRequest, AuthResponse, HealthResponse,
     HoursSubmissionRequest, HoursSubmissionResponse,
-    DailyTipRequest, DailyTipResponse
+    DailyTipRequest, DailyTipResponse,
+    ManagerAuthRequest, ManagerAuthResponse
 )
 from .gsheets_service import gs_service
 from .config import settings
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -24,15 +33,15 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize Google Sheets connection
     try:
         gs_service.connect()
-        print("✓ Connected to Google Sheets")
+        logger.info("✓ Connected to Google Sheets successfully")
     except Exception as e:
-        print(f"✗ Failed to connect to Google Sheets: {e}")
-        print("  The application will continue, but API calls may fail.")
+        logger.error(f"✗ Failed to connect to Google Sheets: {e}", exc_info=True)
+        logger.warning("Application will continue, but API calls may fail")
     
     yield
     
     # Shutdown: cleanup if needed
-    print("Shutting down...")
+    logger.info("Shutting down application...")
 
 
 # Initialize FastAPI app
@@ -43,13 +52,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS with specific allowed origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=settings.get_allowed_origins(),  # Whitelist specific origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -135,7 +144,48 @@ async def verify_auth(auth_request: AuthRequest):
     
     except Exception as e:
         # Log error for debugging but don't expose details to client
-        print(f"Authentication error: {str(e)}")
+        logger.error(f"Authentication error for user {auth_request.name}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication service temporarily unavailable"
+        )
+
+
+@app.post("/manager/auth", response_model=ManagerAuthResponse, tags=["Manager"])
+async def manager_auth(request: ManagerAuthRequest):
+    """
+    Authenticate manager with password.
+    
+    This endpoint verifies the manager password against the configured value.
+    In a production system, this should use proper JWT tokens and hashed passwords.
+    
+    Args:
+        request: Contains manager password
+    
+    Returns:
+        ManagerAuthResponse with success status and token
+    """
+    try:
+        # Simple password check (in production, use hashed passwords + JWT)
+        if request.password == settings.manager_password:
+            # In production, generate a proper JWT token here
+            token = "manager_authenticated"  # Placeholder - use JWT in production
+            logger.info("Manager authenticated successfully")
+            return ManagerAuthResponse(
+                success=True,
+                message="Authentication successful",
+                token=token
+            )
+        else:
+            logger.warning("Failed manager authentication attempt")
+            return ManagerAuthResponse(
+                success=False,
+                message="Invalid password",
+                token=None
+            )
+    
+    except Exception as e:
+        logger.error(f"Manager authentication error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication service temporarily unavailable"
@@ -202,7 +252,7 @@ async def submit_hours(request: HoursSubmissionRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Hours submission error: {str(e)}")
+        logger.error(f"Hours submission error for {request.employee_name} on {request.date}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to submit hours: {str(e)}"
@@ -254,7 +304,7 @@ async def submit_daily_tip(request: DailyTipRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Daily tip submission error: {str(e)}")
+        logger.error(f"Daily tip submission error for {request.date}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to submit daily tips: {str(e)}"

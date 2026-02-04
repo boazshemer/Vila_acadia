@@ -60,6 +60,16 @@ export const hoursAPI = {
 
 export const managerAPI = {
   /**
+   * Authenticate manager with password
+   * @param {string} password - Manager password
+   * @returns {Promise<{success: boolean, message: string, token: string}>}
+   */
+  login: async (password) => {
+    const response = await api.post('/manager/auth', { password });
+    return response.data;
+  },
+  
+  /**
    * Submit daily tips
    * @param {Object} data - Tip submission data
    * @param {string} data.date - Date in YYYY-MM-DD format

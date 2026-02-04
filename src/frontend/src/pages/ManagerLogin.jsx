@@ -4,9 +4,7 @@ import { motion } from 'framer-motion';
 import { Shield, Lock, ArrowLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import LoadingSpinner from '../components/LoadingSpinner';
-
-// Simple password auth - In production, use proper backend authentication
-const MANAGER_PASSWORD = 'manager2024'; // TODO: Move to backend
+import { managerAPI } from '../services/api';
 
 export default function ManagerLogin() {
   const navigate = useNavigate();
@@ -23,19 +21,24 @@ export default function ManagerLogin() {
     
     setIsLoading(true);
     
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    if (password === MANAGER_PASSWORD) {
-      toast.success('Manager access granted');
-      localStorage.setItem('managerAuth', 'true');
-      navigate('/manager/dashboard');
-    } else {
-      toast.error('Incorrect password');
+    try {
+      const response = await managerAPI.login(password);
+      
+      if (response.success && response.token) {
+        toast.success('Manager access granted');
+        localStorage.setItem('managerAuth', 'true');
+        localStorage.setItem('managerToken', response.token);
+        navigate('/manager/dashboard');
+      } else {
+        toast.error(response.message || 'Incorrect password');
+        setPassword('');
+      }
+    } catch (error) {
+      toast.error(error.message || 'Authentication failed');
+      setPassword('');
+    } finally {
+      setIsLoading(false);
     }
-    
-    setIsLoading(false);
-    setPassword('');
   };
   
   return (

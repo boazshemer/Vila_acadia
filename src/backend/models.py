@@ -27,6 +27,18 @@ class AuthResponse(BaseModel):
     employee_name: str = Field(default="", description="Authenticated employee name")
 
 
+class ManagerAuthRequest(BaseModel):
+    """Request model for manager authentication."""
+    password: str = Field(..., min_length=1, description="Manager password")
+
+
+class ManagerAuthResponse(BaseModel):
+    """Response model for manager authentication."""
+    success: bool = Field(..., description="Whether authentication succeeded")
+    message: str = Field(..., description="Status message")
+    token: Optional[str] = Field(default=None, description="Authentication token (if successful)")
+
+
 class HealthResponse(BaseModel):
     """Response model for health check."""
     status: str = Field(..., description="Service status")
