@@ -27,16 +27,9 @@ class GoogleSheetsService:
     
     def _get_credentials(self) -> Credentials:
         """Create credentials from service account JSON."""
-        import logging
-        logger = logging.getLogger(__name__)
-        
         try:
             return Credentials.from_service_account_file('service-account.json', scopes=self.SCOPES)
         except Exception:
-            logger.info(f"Settings object type: {type(settings)}")
-            logger.info(f"Settings is None: {settings is None}")
-            if settings is None:
-                raise Exception("Settings is None - environment variables not loaded!")
             creds_dict = settings.get_service_account_dict()
             return Credentials.from_service_account_info(creds_dict, scopes=self.SCOPES)
     
@@ -59,22 +52,14 @@ class GoogleSheetsService:
             sheet = self.get_spreadsheet()
             return {
                 "status": "connected",
-                "spreadsheet_id": settings.google_sheet_id if settings else "N/A",
+                "spreadsheet_id": settings.google_sheet_id,
                 "spreadsheet_title": sheet.title,
                 "message": "Successfully connected to Google Sheets"
             }
         except Exception as e:
-            # Safe access to settings in case it's None
-            sheet_id = "N/A"
-            try:
-                if settings:
-                    sheet_id = settings.google_sheet_id
-            except:
-                pass
-            
             return {
                 "status": "error",
-                "spreadsheet_id": sheet_id,
+                "spreadsheet_id": settings.google_sheet_id,
                 "message": f"Failed to connect: {str(e)}"
             }
     

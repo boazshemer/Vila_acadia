@@ -69,20 +69,6 @@ def get_settings() -> Settings:
 
 
 # Initialize settings on import
-# This will raise an exception if required environment variables are missing
-import logging
-logger = logging.getLogger(__name__)
-
-try:
-    logger.info("Attempting to initialize settings...")
-    logger.info(f"GOOGLE_SHEET_ID from env: {os.getenv('GOOGLE_SHEET_ID', 'NOT SET')}")
-    logger.info(f"SERVICE_ACCOUNT_JSON length: {len(os.getenv('SERVICE_ACCOUNT_JSON', ''))} chars")
-    logger.info(f"FRONTEND_URL from env: {os.getenv('FRONTEND_URL', 'NOT SET')}")
-    settings = Settings()
-    logger.info("✓ Settings initialized successfully!")
-except Exception as e:
-    logger.error(f"✗ CRITICAL: Failed to initialize settings: {e}", exc_info=True)
-    settings = None
-    raise
+settings = Settings()
 
 
