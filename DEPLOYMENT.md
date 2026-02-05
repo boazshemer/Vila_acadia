@@ -1,6 +1,6 @@
-# Deployment Guide - Railway
+# Deployment Guide - Railway (Full Stack)
 
-This guide covers deploying the Vila Acadia backend to Railway.
+This guide covers deploying the **complete Vila Acadia application** (frontend + backend) to Railway as a single unified service.
 
 ## Prerequisites
 
@@ -109,8 +109,13 @@ Railway will automatically deploy when you push to GitHub.
 
 The project includes these deployment configurations:
 
-### `railway.json`
-Configures Railway build and deployment settings.
+### `Dockerfile`
+Multi-stage build that:
+1. **Stage 1**: Builds the React frontend using Node.js (npm run build)
+2. **Stage 2**: Installs Python backend dependencies
+3. **Stage 3**: Combines built frontend and backend into final image
+
+The frontend is built into static files and served by FastAPI.
 
 ### `Procfile`
 Defines the web server start command:
@@ -123,6 +128,16 @@ Specifies Python version:
 ```
 python-3.11
 ```
+
+## Architecture
+
+**Single Service Deployment:**
+- Frontend (React/Vite) is built to static files during Docker build
+- Backend (FastAPI) serves both:
+  - API endpoints at `/auth/verify`, `/health`, `/submit-hours`, etc.
+  - Frontend static files at `/` (root and all non-API routes)
+- No CORS issues since everything runs on the same domain
+- Simplified deployment and management
 
 ## Environment Variables Reference
 
@@ -162,6 +177,17 @@ curl -X POST https://your-app.railway.app/auth/verify \
   -H "Content-Type: application/json" \
   -d '{"name": "John Doe", "pin": "1234"}'
 ```
+
+### Frontend Access
+
+Visit: `https://your-app.railway.app`
+
+The complete web application will be available at the root URL with all pages:
+- `/` - Landing/Login page
+- `/employee/login` - Employee login
+- `/employee/time-entry` - Time entry form
+- `/manager/login` - Manager login
+- `/manager/dashboard` - Manager dashboard
 
 ### API Documentation
 

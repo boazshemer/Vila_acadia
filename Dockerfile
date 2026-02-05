@@ -1,8 +1,25 @@
-# Vila Acadia - Backend Dockerfile
-# Multi-stage build for optimized production image
+# Vila Acadia - Full Stack Dockerfile
+# Multi-stage build for optimized production image with frontend and backend
 
-# Stage 1: Builder
-FROM python:3.11-slim as builder
+# Stage 1: Frontend Builder
+FROM node:20-slim as frontend-builder
+
+WORKDIR /frontend
+
+# Copy frontend package files
+COPY src/frontend/package*.json ./
+
+# Install frontend dependencies
+RUN npm ci --only=production
+
+# Copy frontend source
+COPY src/frontend/ ./
+
+# Build frontend for production
+RUN npm run build
+
+# Stage 2: Python Dependencies Builder
+FROM python:3.11-slim as python-builder
 
 WORKDIR /app
 
@@ -15,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Stage 2: Runtime
+# Stage 3: Runtime
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -25,11 +42,14 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 
 # Copy Python dependencies from builder
-COPY --from=builder /root/.local /home/appuser/.local
+COPY --from=python-builder /root/.local /home/appuser/.local
 
 # Copy application code
-COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser src/backend/ ./src/backend/
 COPY --chown=appuser:appuser verify.py ./
+
+# Copy built frontend from frontend-builder
+COPY --from=frontend-builder --chown=appuser:appuser /frontend/dist ./static
 
 # Set environment variables
 ENV PATH=/home/appuser/.local/bin:$PATH \

@@ -65,20 +65,36 @@ class GoogleSheetsService:
     
     def get_employee_settings(self) -> List[Dict[str, str]]:
         """Fetch employee roster and PINs from the Settings tab."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             sheet = self.get_spreadsheet()
             settings_worksheet = sheet.worksheet(self.SETTINGS_TAB)
             records = settings_worksheet.get_all_records()
             
+            logger.info(f"📊 Read {len(records)} records from Settings sheet")
+            logger.info(f"📊 Raw records: {records}")
+            
             employees = []
-            for record in records:
+            for idx, record in enumerate(records):
+                logger.info(f"📊 Processing record {idx}: {record}")
+                
                 name = (record.get("Name") or record.get("name") or 
                        record.get("Employee Name") or record.get("employee name") or "").strip()
                 pin = str(record.get("PIN") or record.get("pin") or 
                          record.get("Pin") or "").strip()
                 
+                logger.info(f"📊 Extracted - name: '{name}', pin: '{pin}'")
+                
                 if name and pin:
                     employees.append({"name": name, "pin": pin})
+                    logger.info(f"✅ Added employee: name='{name}', pin='{pin}'")
+                else:
+                    logger.warning(f"⚠️ Skipped record - name: '{name}', pin: '{pin}'")
+            
+            logger.info(f"📊 Total employees found: {len(employees)}")
+            logger.info(f"📊 Employees list: {employees}")
             
             return employees
         

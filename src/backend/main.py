@@ -3,8 +3,12 @@ FastAPI application for Vila Acadia timesheet system.
 Provides authentication and Google Sheets integration.
 """
 import logging
-from fastapi import FastAPI, HTTPException, status
+import os
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from .models import (
@@ -61,10 +65,16 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# Determine static files path
+STATIC_DIR = Path(__file__).parent.parent.parent / "static"
+if not STATIC_DIR.exists():
+    logger.warning(f"Static directory not found at {STATIC_DIR}. Frontend will not be served.")
+    STATIC_DIR = None
 
-@app.get("/", tags=["Root"])
+
+@app.get("/api", tags=["Root"])
 async def root():
-    """Root endpoint - API information."""
+    """API root endpoint - API information."""
     return {
         "service": "Vila Acadia Timesheet API",
         "version": "1.0.0",
@@ -309,6 +319,30 @@ async def submit_daily_tip(request: DailyTipRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to submit daily tips: {str(e)}"
         )
+
+
+# Mount static files and serve frontend (must be after all API routes)
+if STATIC_DIR and STATIC_DIR.exists():
+    # Mount static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+    
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """
+        Catch-all route to serve frontend index.html for client-side routing.
+        This must be defined after all API routes to avoid conflicts.
+        """
+        # Check if file exists in static directory
+        file_path = STATIC_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        
+        # Otherwise serve index.html for client-side routing
+        index_path = STATIC_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 # Development server runner
