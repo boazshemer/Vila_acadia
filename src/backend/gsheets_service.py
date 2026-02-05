@@ -59,14 +59,22 @@ class GoogleSheetsService:
             sheet = self.get_spreadsheet()
             return {
                 "status": "connected",
-                "spreadsheet_id": settings.google_sheet_id,
+                "spreadsheet_id": settings.google_sheet_id if settings else "N/A",
                 "spreadsheet_title": sheet.title,
                 "message": "Successfully connected to Google Sheets"
             }
         except Exception as e:
+            # Safe access to settings in case it's None
+            sheet_id = "N/A"
+            try:
+                if settings:
+                    sheet_id = settings.google_sheet_id
+            except:
+                pass
+            
             return {
                 "status": "error",
-                "spreadsheet_id": settings.google_sheet_id,
+                "spreadsheet_id": sheet_id,
                 "message": f"Failed to connect: {str(e)}"
             }
     
