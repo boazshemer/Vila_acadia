@@ -68,14 +68,8 @@ def get_settings() -> Settings:
     return _settings
 
 
-# Initialize settings on import (but allow it to fail gracefully for tests)
-try:
-    settings = Settings()
-except Exception as e:
-    # During test collection, environment may not be set yet
-    # Settings will be initialized by conftest.py
-    import logging
-    logging.error(f"Failed to initialize settings: {e}")
-    settings = None  # type: ignore
+# Initialize settings on import
+# This will raise an exception if required environment variables are missing
+settings = Settings()
 
 
